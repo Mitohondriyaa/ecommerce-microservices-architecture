@@ -1,0 +1,251 @@
+services:
+  mongodb-product:
+    image: mongo:8
+    container_name: mongodb-product
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: product-service
+    volumes:
+      - ./mongodb-product-data:/data/db
+  redis-cache-product:
+    image: redis:8.0
+    container_name: redis-cache-product
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-cache-product-data:/data
+  redis-counter-product:
+    image: redis:8.0
+    container_name: redis-counter-product
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./redis-counter-product-data:/data
+
+  product-service:
+    image: mitohondriyaa/product-service:latest
+    container_name: product-service
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_CACHE_HOST: redis-cache-product
+      REDIS_CACHE_PORT: 6379
+      REDIS_COUNTER_HOST: redis-counter-product
+      REDIS_COUNTER_PORT: 6379
+      DB_USERNAME: root
+      DB_PASSWORD: password
+      DB_HOST: mongodb-product
+      DB_PORT: 27017
+      AUTH_SERVER_URL: http://keycloak:8080
+      AUTH_SERVER_REALM: microservices-realm 
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+  mysql-order:
+    image: mysql:8
+    container_name: mysql-order
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    volumes:
+      - ./mysql-order-data:/var/lib/mysql
+      - ./init/mysql-order/init.sql:/docker-entrypoint-initdb.d/init.sql
+  kafka-1:
+    image: bitnami/kafka:4.0.0
+    container_name: kafka-1
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_CLUSTER_ID: 0
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka-1:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,EXTERNAL://localhost:29092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    volumes:
+      - ./kafka-1-data:/bitnami/kafka
+  kafka-2:
+    image: bitnami/kafka:4.0.0
+    container_name: kafka-2
+    depends_on:
+      - kafka-1
+    ports:
+      - "29093:29092"
+    environment:
+      KAFKA_CLUSTER_ID: 0
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka-1:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:29092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092,EXTERNAL://localhost:29093
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    volumes:
+      - ./kafka-2-data:/bitnami/kafka
+  schema-registry:
+    image: bitnami/schema-registry:8.0.0
+    container_name: schema-registry
+    hostname: schema-registry
+    depends_on:
+      - kafka-1
+      - kafka-2
+    ports:
+      - "8085:8081"
+    environment:
+      SCHEMA_REGISTRY_KAFKA_BROKERS: PLAINTEXT://kafka-1:9092
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: kafka-ui
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - schema-registry
+    ports:
+      - "8086:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      DYNAMIC_CONFIG_ENABLED: 'true'
+
+  order-service:
+    image: mitohondriyaa/order-service:latest
+    container_name: order-service
+    ports:
+      - "8081:8081"
+    environment:
+      INVENTORY_URL: http://inventory-service:8082
+      PRODUCT_URL: http://product-service:8080
+      DB_HOST: mysql-order
+      DB_PORT: 3306
+      DB_USERNAME: root
+      DB_PASSWORD: password
+      AUTH_SERVER_URL: http://keycloak:8080
+      AUTH_SERVER_REALM: microservices-realm 
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+  mysql-inventory:
+    image: mysql:8
+    container_name: mysql-inventory
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    volumes:
+      - ./mysql-inventory-data:/var/lib/mysql
+      - ./init/mysql-inventory/init.sql:/docker-entrypoint-initdb.d/init.sql
+  redis-idempotency-inventory:
+    image: redis:8.0
+    container_name: redis-idempotency-inventory
+    ports:
+      - "6382:6379"
+    volumes:
+      - ./redis-idempotency-inventory-data:/data
+
+  inventory-service:
+    image: mitohondriyaa/inventory-service:latest
+    container_name: inventory-service
+    ports:
+      - "8082:8082"
+    environment:
+      REDIS_IDEMPOTENCY_HOST: redis-idempotency-inventory
+      REDIS_IDEMPOTENCY_PORT: 6379
+      DB_HOST: mysql-inventory
+      DB_PORT: 3306
+      DB_USERNAME: root
+      DB_PASSWORD: password
+      AUTH_SERVER_URL: http://keycloak:8080
+      AUTH_SERVER_REALM: microservices-realm 
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+  redis-idempotency-notification:
+    image: redis:8.0
+    container_name: redis-idempotency-notification
+    ports:
+      - "6381:6379"
+    volumes:
+      - ./redis-idempotency-notification-data:/data
+
+  notification-service:
+    image: mitohondriyaa/notification-service:latest
+    container_name: notification-service
+    ports:
+      - "8083:8083"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      REDIS_IDEMPOTENCY_HOST: redis-idempotency-notification
+      REDIS_IDEMPOTENCY_PORT: 6379
+      MAIL_HOST: sandbox.smtp.mailtrap.io
+      MAIL_PORT: 2525
+      MAIL_USERNAME: 3e86c7bcf9c407
+      MAIL_PASSWORD: 014d26df665d93
+
+  mysql-keycloak:
+    image: mysql:8
+    container_name: mysql-keycloak
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: keycloak
+      MYSQL_USER: keycloak
+      MYSQL_PASSWORD: password
+    volumes:
+      - ./mysql-keycloak-data:/var/lib/mysql
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.2
+    container_name: keycloak
+    command: [ "start-dev", "--import-realm" ]
+    environment:
+      DB_VENDOR: MYSQL
+      DB_ADDR: mysql-keycloak
+      DB_DATABASE: keycloak
+      DB_USER: keycloak
+      DB_PASSWORD: password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./keycloak/realms/:/opt/keycloak/data/import/
+    depends_on:
+      - mysql-keycloak
+
+  api-gateway:
+    image: mitohondriyaa/api-gateway:latest
+    container_name: api-gateway
+    ports:
+      - "9000:9000"
+    environment:
+      INVENTORY_URL: http://inventory-service:8082
+      PRODUCT_URL: http://product-service:8080
+      ORDER_URL: http://order-service:8081
+      AUTH_SERVER_URL: http://keycloak:8080
+      AUTH_SERVER_REALM: microservices-realm 
+    depends_on:
+      - product-service
+      - order-service
+      - inventory-service
+      - notification-service
+
+  security-client:
+    image: mitohondriyaa/security-client:latest
+    container_name: security-client
+    ports:
+      - "8084:8084"
+    environment:
+      CLIENT_ID: security-client
+      CLIENT_SECRET: vCSZ0cAynvIvpsxbWvFQg1UVBsyc8AXb
+      USER_LOGIN: test-user
+      USER_PASSWORD: 12345
+      AUTH_SERVER_URL: http://keycloak:8080
+      AUTH_SERVER_REALM: microservices-realm 
